@@ -23,12 +23,61 @@ Take five countries you know well. Write down
 How many values did you need for (1)? How many *possible* values for (2)? What happens to that number with 190 countries?
 :::
 
-Attribute data has one row per **unit**. Relational data has one row per **pair** of units, and the number of possible pairs grows much faster than the number of units.
-
 ```{r}
 library(tidyverse)
 library(igraph)
+```
 
+### Attribute data: one row per country
+
+This is the data format you know from regression: each row is a unit, each column a property of that unit.
+
+```{r}
+countries <- tribble(
+  ~country, ~eu_member, ~landlocked,
+  "AUT",    TRUE,       TRUE,
+  "CHE",    FALSE,      TRUE,
+  "DEU",    TRUE,       FALSE,
+  "FRA",    TRUE,       FALSE,
+  "ITA",    TRUE,       FALSE
+)
+countries
+```
+
+### Relational data: one row per pair
+
+Now the relation "shares a border". The unit of observation is no longer a country but a **pair of countries** (a dyad). With five countries there are 10 possible pairs:
+
+```{r}
+dyads <- combn(countries$country, 2) |>
+  t() |>
+  as_tibble(.name_repair = ~ c("country_1", "country_2"))
+
+borders <- tribble(
+  ~country_1, ~country_2,
+  "AUT", "CHE",
+  "AUT", "DEU",
+  "AUT", "ITA",
+  "CHE", "DEU",
+  "CHE", "FRA",
+  "CHE", "ITA",
+  "DEU", "FRA",
+  "FRA", "ITA"
+)
+
+dyads <- dyads |>
+  left_join(borders |> mutate(border = 1), by = c("country_1", "country_2")) |>
+  mutate(border = replace_na(border, 0))
+dyads
+```
+
+::: {.callout-note title="Think first"}
+Which pairs have `border = 0`? Notice that "no border" is information too. An edge list (Section 3) usually keeps only the 1s, so the 0s are implicit.
+:::
+
+### How fast do pairs grow?
+
+```{r}
 n <- c(5, 10, 50, 190)
 tibble(
   countries = n,
@@ -36,6 +85,26 @@ tibble(
   directed_pairs = n * (n - 1)
 )
 ```
+
+With 190 countries you have 190 rows of attribute data, but almost 18,000 possible undirected pairs.
+
+### Putting both together: a network
+
+A network combines the two. Relations become **edges**, and attributes stay attached to the **nodes**.
+
+```{r}
+g_borders <- graph_from_data_frame(borders, directed = FALSE, vertices = countries)
+
+plot(
+  g_borders,
+  vertex.color = ifelse(V(g_borders)$eu_member, "steelblue", "grey80"),
+  vertex.label.color = "black"
+)
+```
+
+::: {.callout-note title="Think first"}
+Switzerland is the only non-EU country here, yet it borders all four others. What does that tell you about using attributes alone to understand a country's position in Europe?
+:::
 
 ## 2. Building blocks
 
