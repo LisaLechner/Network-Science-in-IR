@@ -1,7 +1,7 @@
 ---
 title: "Session 1: Relational thinking"
 subtitle: "Core concepts in network science"
-date: 2027-01-07
+date: today
 ---
 
 ## Goals

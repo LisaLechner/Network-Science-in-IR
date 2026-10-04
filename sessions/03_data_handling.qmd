@@ -1,7 +1,7 @@
 ---
 title: "Session 3: Preparing and handling network data"
 subtitle: "From messy raw data to a clean network object"
-date: 2027-01-21
+date: today
 ---
 
 ## Goals

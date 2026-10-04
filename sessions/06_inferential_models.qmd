@@ -1,7 +1,7 @@
 ---
 title: "Session 6: Inferential network models"
 subtitle: "Exponential random graph models (ERGMs)"
-date: 2027-02-25
+date: today
 ---
 
 ## Goals
