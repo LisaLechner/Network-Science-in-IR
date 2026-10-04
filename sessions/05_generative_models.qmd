@@ -1,0 +1,112 @@
+---
+title: "Session 5: Generative network models"
+subtitle: "Compared to what? Random graphs as baselines"
+date: 2027-02-24
+---
+
+## Goals
+
+- understand that a network statistic means little without a **baseline**,
+- simulate networks from the classic generative models: random graphs, the configuration model, small worlds, preferential attachment,
+- compare an observed network to simulated ones,
+- see which simple mechanisms produce which structures.
+
+```{r}
+library(tidyverse)
+library(igraph)
+set.seed(2027)
+```
+
+## 1. The question: is this a lot?
+
+```{r}
+g <- make_graph("Zachary")
+transitivity(g)
+```
+
+::: {.callout-note title="Think first"}
+Is a transitivity of about 0.26 high or low? You cannot answer without asking: *compared to what?*
+:::
+
+## 2. The random graph (Erdős–Rényi)
+
+The simplest baseline keeps the number of nodes and edges, and places edges completely at random.
+
+```{r}
+n <- vcount(g)
+m <- ecount(g)
+
+g_random <- sample_gnm(n, m)
+plot(g_random, vertex.size = 6, vertex.label = NA)
+transitivity(g_random)
+```
+
+One draw is not enough. Simulate many:
+
+```{r}
+sim_er <- replicate(1000, transitivity(sample_gnm(n, m)))
+
+tibble(transitivity = sim_er) |>
+  ggplot(aes(transitivity)) +
+  geom_histogram(bins = 40) +
+  geom_vline(xintercept = transitivity(g), colour = "red", linewidth = 1) +
+  labs(title = "Observed (red) vs. 1,000 random graphs")
+```
+
+## 3. Holding degree fixed: the configuration model
+
+Maybe clustering is only high because some nodes have many ties. The configuration model keeps **each node's degree** and randomises everything else.
+
+```{r}
+sim_conf <- replicate(1000, transitivity(sample_degseq(degree(g), method = "vl")))
+
+tibble(
+  model = rep(c("Random graph", "Configuration model"), each = 1000),
+  transitivity = c(sim_er, sim_conf)
+) |>
+  ggplot(aes(transitivity, fill = model)) +
+  geom_histogram(bins = 40, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = transitivity(g), colour = "red", linewidth = 1)
+```
+
+::: {.callout-warning title="Discuss"}
+If the observed value lies outside the configuration-model distribution, clustering is not just a by-product of the degree distribution. What social or political mechanism could produce it?
+:::
+
+## 4. Mechanisms that generate structure
+
+**Small world** (Watts–Strogatz): a regular lattice with a few random shortcuts gives high clustering *and* short paths.
+
+```{r}
+g_sw <- sample_smallworld(dim = 1, size = 100, nei = 3, p = 0.05)
+c(clustering = transitivity(g_sw), avg_path = mean_distance(g_sw))
+```
+
+**Preferential attachment** (Barabási–Albert): new nodes prefer to tie to already well-connected nodes ("the rich get richer").
+
+```{r}
+g_pa <- sample_pa(500, m = 2, directed = FALSE)
+
+tibble(degree = degree(g_pa)) |>
+  count(degree) |>
+  ggplot(aes(degree, n)) +
+  geom_point() +
+  scale_x_log10() + scale_y_log10() +
+  labs(title = "Degree distribution under preferential attachment (log-log)")
+```
+
+::: {.callout-note title="Think first"}
+Which IR networks might grow by preferential attachment? Think of new states joining organisations, or new trade partners.
+:::
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Repeat the comparison in Sections 2–3 for **average path length** instead of transitivity.
+2. Apply both baselines to the network from Session 4 (or your own IR network). Which features are "surprising"?
+3. Vary `p` in the small-world model from 0 to 1 and plot clustering and average path length against `p`.
+:::
+
+```{r}
+# your code here
+```

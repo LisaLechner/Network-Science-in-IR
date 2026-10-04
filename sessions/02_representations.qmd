@@ -1,0 +1,170 @@
+---
+title: "Session 2: Representing networks"
+subtitle: "Edge lists, adjacency matrices, attributes, bipartite and multiplex structures"
+date: 2027-01-08
+---
+
+## Goals
+
+- translate between an **edge list** and an **adjacency matrix**, by hand and in R,
+- attach **node attributes** to a network,
+- understand **bipartite** networks and how a projection creates a one-mode network,
+- represent **multiplex** networks (several relation types between the same nodes).
+
+```{r}
+library(tidyverse)
+library(igraph)
+```
+
+## 1. Edge list → adjacency matrix
+
+::: {.callout-note title="Think first"}
+Draw the 5×5 adjacency matrix for the edge list below by hand. Put a 1 where two nodes are tied and a 0 otherwise. Why is the matrix symmetric? What sits on the diagonal?
+:::
+
+```{r}
+edges <- tribble(
+  ~from, ~to,
+  "A", "B",
+  "A", "C",
+  "B", "C",
+  "C", "D",
+  "D", "E"
+)
+g <- graph_from_data_frame(edges, directed = FALSE)
+
+A <- as_adjacency_matrix(g, sparse = FALSE)
+A
+```
+
+Compare with your drawing. Now see that **row sums are degrees**:
+
+```{r}
+rowSums(A)
+degree(g)
+```
+
+A network measure is often just matrix algebra. For example, `A %*% A` counts paths of length two:
+
+```{r}
+A %*% A
+```
+
+::: {.callout-note title="Think first"}
+What does the diagonal of `A %*% A` show? Why?
+:::
+
+## 2. Adjacency matrix → network
+
+```{r}
+M <- matrix(
+  c(0, 1, 0,
+    0, 0, 1,
+    1, 0, 0),
+  nrow = 3, byrow = TRUE,
+  dimnames = list(c("X", "Y", "Z"), c("X", "Y", "Z"))
+)
+g_dir <- graph_from_adjacency_matrix(M, mode = "directed")
+plot(g_dir, edge.arrow.size = 0.5)
+```
+
+This matrix is not symmetric, so the network is directed. Rows send ties, columns receive them.
+
+## 3. Node attributes
+
+Networks combine relations with attributes. In R, attributes are stored on the nodes:
+
+```{r}
+nodes <- tibble(
+  name = c("A", "B", "C", "D", "E"),
+  regime = c("democracy", "democracy", "autocracy", "democracy", "autocracy")
+)
+g <- graph_from_data_frame(edges, directed = FALSE, vertices = nodes)
+
+V(g)$regime
+plot(g, vertex.color = ifelse(V(g)$regime == "democracy", "steelblue", "tomato"))
+```
+
+## 4. Bipartite networks: states and organisations
+
+Many IR networks link two *different kinds* of nodes, such as states and the international organisations they belong to.
+
+```{r}
+membership <- tribble(
+  ~state, ~igo,
+  "AUT", "EU",
+  "AUT", "UN",
+  "DEU", "EU",
+  "DEU", "NATO",
+  "DEU", "UN",
+  "USA", "NATO",
+  "USA", "UN"
+)
+
+# Incidence matrix: states in rows, organisations in columns
+B <- unclass(table(membership$state, membership$igo))
+B
+```
+
+::: {.callout-note title="Think first"}
+Compute `B %*% t(B)` by hand. What does each cell tell you about two states? What is on the diagonal?
+:::
+
+```{r}
+S <- B %*% t(B)
+S
+```
+
+This **projection** gives a state-by-state network weighted by shared memberships:
+
+```{r}
+g_states <- graph_from_adjacency_matrix(S, mode = "undirected", weighted = TRUE, diag = FALSE)
+plot(g_states, edge.width = E(g_states)$weight * 2, edge.label = E(g_states)$weight)
+```
+
+The same in igraph's own bipartite tools:
+
+```{r}
+g_bip <- graph_from_data_frame(membership, directed = FALSE)
+V(g_bip)$type <- V(g_bip)$name %in% membership$igo
+plot(g_bip, layout = layout_as_bipartite, vertex.color = ifelse(V(g_bip)$type, "gold", "grey80"))
+
+bipartite_projection(g_bip)
+```
+
+::: {.callout-warning title="Discuss"}
+Projection loses information. Which? Think of two states that share membership only in the UN versus two that share the EU.
+:::
+
+## 5. Multiplex networks
+
+The same states can be linked by several relations at once. One way to store this is a single edge list with a `layer` column:
+
+```{r}
+multi <- tribble(
+  ~from, ~to, ~layer,
+  "A", "B", "trade",
+  "A", "C", "trade",
+  "B", "C", "alliance",
+  "A", "B", "alliance",
+  "C", "D", "trade"
+)
+g_multi <- graph_from_data_frame(multi, directed = FALSE)
+plot(g_multi, edge.color = ifelse(E(g_multi)$layer == "trade", "darkgreen", "purple"), edge.width = 2)
+
+# Extract one layer
+g_trade <- subgraph_from_edges(g_multi, E(g_multi)[layer == "trade"])
+plot(g_trade)
+```
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Write an edge list for a directed network of four states where trade flows go A→B, B→C, C→A and A→D. Convert it to an adjacency matrix and check that row and column sums give out- and in-degree.
+2. Extend the `membership` data with two more states and one more organisation. Project it and interpret the strongest tie.
+3. Project the bipartite network the *other* way (organisation by organisation). What does a tie mean now?
+:::
+
+```{r}
+# your code here
+```

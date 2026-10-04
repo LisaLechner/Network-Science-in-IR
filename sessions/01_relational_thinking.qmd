@@ -1,0 +1,101 @@
+---
+title: "Session 1: Relational thinking"
+subtitle: "Core concepts in network science"
+date: 2027-01-07
+---
+
+## Goals
+
+By the end of this session you can
+
+- explain the difference between **attribute data** and **relational data**,
+- name the building blocks of a network: nodes, edges, direction, weight,
+- say why standard regression assumptions break down when observations are connected.
+
+## 1. Think first: attributes vs. relations
+
+::: {.callout-note title="Think first (pen and paper, 10 min)"}
+Take five countries you know well. Write down
+
+1. one **attribute** of each country (e.g. GDP, regime type), and
+2. one **relation** between pairs of countries (e.g. "shares a border with").
+
+How many values did you need for (1)? How many *possible* values for (2)? What happens to that number with 190 countries?
+:::
+
+Attribute data has one row per **unit**. Relational data has one row per **pair** of units, and the number of possible pairs grows much faster than the number of units.
+
+```{r}
+library(tidyverse)
+library(igraph)
+
+n <- c(5, 10, 50, 190)
+tibble(
+  countries = n,
+  undirected_pairs = n * (n - 1) / 2,
+  directed_pairs = n * (n - 1)
+)
+```
+
+## 2. Building blocks
+
+A **network** (or graph) consists of
+
+- **nodes** (vertices): the units, e.g. states, organisations, leaders,
+- **edges** (ties, links): the relations between them.
+
+Edges can be
+
+- **undirected** (A–B is the same as B–A: "share a border") or **directed** (A→B is not B→A: "sends aid to"),
+- **binary** (present or absent) or **weighted** (e.g. trade volume).
+
+## 3. Your first network
+
+The simplest way to write down a network is to list who is connected to whom.
+
+```{r}
+edges <- tribble(
+  ~from, ~to,
+  "A", "B",
+  "A", "C",
+  "B", "C",
+  "C", "D",
+  "D", "E"
+)
+
+g <- graph_from_data_frame(edges, directed = FALSE)
+plot(g)
+```
+
+::: {.callout-note title="Think first"}
+Before running the next chunk: how many ties does each node have? Which node would you call most "central", and why?
+:::
+
+```{r}
+degree(g)
+```
+
+Now compare: is the node with the most ties also the one whose removal would split the network?
+
+```{r}
+plot(delete_vertices(g, "C"))
+plot(delete_vertices(g, "D"))
+```
+
+Already here, "centrality" means more than one thing. We return to this in Session 4.
+
+## 4. Why relations break standard statistics
+
+Regression assumes observations are **independent**. In a network, a tie between A and B is not independent of ties A–C and B–C: if two of your allies are allied with each other, that changes the picture. This **dependence** is not a nuisance in network science; it is the object of study. Sessions 5 and 6 show how to model it.
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Build a directed network of five actors where *one* actor sends ties to everybody and nobody sends ties back. Plot it.
+2. Compute `degree(g, mode = "in")` and `degree(g, mode = "out")`. Explain the result in one sentence each.
+3. Name one IR phenomenon where direction matters and one where it does not.
+:::
+
+```{r}
+# your code here
+```

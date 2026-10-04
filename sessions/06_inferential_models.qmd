@@ -1,0 +1,92 @@
+---
+title: "Session 6: Inferential network models"
+subtitle: "Exponential random graph models (ERGMs)"
+date: 2027-02-25
+---
+
+## Goals
+
+- understand why ties cannot be modelled as independent observations,
+- read an ERGM as a model of *which local configurations* make a network likely,
+- fit, interpret and check ERGMs in R.
+
+::: {.callout-important}
+ERGMs live in the **statnet** family of packages, which use their own `network` objects and clash with `igraph` function names. Start this session in a fresh R session (Session → Restart R) and do **not** load igraph. To convert between the two formats, use `intergraph::asNetwork()` and `intergraph::asIgraph()`.
+:::
+
+```{r}
+library(ergm)
+data(florentine)   # loads flomarriage and flobusiness
+flomarriage
+plot(flomarriage, displaylabels = TRUE)
+```
+
+Marriage ties among Renaissance Florentine families: a classic network of alliance politics.
+
+## 1. From the random graph to a logit
+
+The simplest ERGM contains only an `edges` term. It is the random graph from Session 5, written as a statistical model.
+
+```{r}
+m1 <- ergm(flomarriage ~ edges)
+summary(m1)
+```
+
+::: {.callout-note title="Think first"}
+Convert the `edges` coefficient into a probability with `plogis()`. Compare it to the network density. Why are they the same?
+:::
+
+```{r}
+plogis(coef(m1))
+network.density(flomarriage)
+```
+
+## 2. Adding node attributes
+
+Do wealthier families have more marriage ties?
+
+```{r}
+m2 <- ergm(flomarriage ~ edges + nodecov("wealth"))
+summary(m2)
+```
+
+So far, ties are still treated as independent given the attributes. This model is a logistic regression on all pairs of families.
+
+## 3. Adding dependence: triangles
+
+Now the key step: does a tie become more likely if two families already share a partner? The `gwesp` term captures this tendency towards triangle closure.
+
+```{r}
+m3 <- ergm(
+  flomarriage ~ edges + nodecov("wealth") + gwesp(decay = 0.25, fixed = TRUE),
+  control = control.ergm(seed = 2027)
+)
+summary(m3)
+```
+
+::: {.callout-warning title="Discuss"}
+Ties now depend on other ties. That is why ERGMs are estimated by simulation (MCMC) rather than by plain maximum likelihood. Connect this to the dependence problem from Session 1.
+:::
+
+## 4. Does the model reproduce the network?
+
+Goodness of fit: simulate networks from the fitted model and compare their statistics with the observed network.
+
+```{r}
+fit <- gof(m3)
+plot(fit)
+```
+
+If the observed values (black line) lie within the simulated range (boxplots), the model captures that feature.
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Fit the same three models to `flobusiness` (business ties). Do the conclusions change?
+2. Add `nodematch()` for a categorical attribute in your own data to test homophily.
+3. In two sentences each, interpret the `wealth` and `gwesp` coefficients of your final model for a political science audience.
+:::
+
+```{r}
+# your code here
+```

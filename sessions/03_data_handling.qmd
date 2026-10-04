@@ -1,0 +1,140 @@
+---
+title: "Session 3: Preparing and handling network data"
+subtitle: "From messy raw data to a clean network object"
+date: 2027-01-21
+---
+
+## Goals
+
+- spot the typical problems in raw relational data (inconsistent IDs, duplicates, self-loops, missing endpoints, isolates),
+- clean an edge list step by step and justify each decision,
+- build network objects from separate node and edge lists, including isolates,
+- slice a network over time,
+- work with networks in the tidy style using **tidygraph**.
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(here)
+```
+
+## 1. Messy raw data
+
+Real relational data rarely arrives clean. Here is a small example with the problems you will meet in practice:
+
+```{r}
+raw <- tribble(
+  ~from,  ~to,   ~year,
+  "AUT",  "DEU", 2010,
+  "aut ", "DEU", 2010,   # inconsistent spelling of the same ID
+  "DEU",  "AUT", 2010,   # same undirected tie, reversed
+  "FRA",  "FRA", 2010,   # self-loop
+  "ITA",  NA,    2011,   # missing endpoint
+  "USA",  "GBR", 2011,
+  "GBR",  "USA", 2012
+)
+raw
+```
+
+::: {.callout-note title="Think first"}
+Before cleaning: how many *real* ties does this data contain? Which rows are problems, and is each one an error or a substantive decision?
+:::
+
+## 2. Cleaning step by step
+
+```{r}
+clean <- raw |>
+  # 1. harmonise IDs
+  mutate(across(c(from, to), \(x) toupper(str_trim(x)))) |>
+  # 2. drop rows with a missing endpoint
+  filter(!is.na(from), !is.na(to)) |>
+  # 3. drop self-loops
+  filter(from != to) |>
+  # 4. undirected: put each pair in a fixed order, then remove duplicates
+  mutate(a = pmin(from, to), b = pmax(from, to)) |>
+  distinct(a, b, year) |>
+  rename(from = a, to = b)
+
+clean
+```
+
+::: {.callout-warning title="Discuss"}
+Step 4 is only correct if the relation is undirected. What would you do if this were a directed relation, e.g. arms transfers? Is a self-loop always an error? (Think of a state's trade with itself in some datasets.)
+:::
+
+## 3. Node lists and isolates
+
+An edge list cannot contain states with **no** ties. If isolates matter (they almost always do in IR), you need a separate node list:
+
+```{r}
+nodes <- tibble(
+  name = c("AUT", "DEU", "FRA", "GBR", "USA", "ITA", "CHE"),
+  eu_member = c(TRUE, TRUE, TRUE, FALSE, FALSE, TRUE, FALSE)
+)
+
+g_without <- graph_from_data_frame(clean, directed = FALSE)
+g_with <- graph_from_data_frame(clean, directed = FALSE, vertices = nodes)
+
+vcount(g_without)
+vcount(g_with)
+```
+
+::: {.callout-note title="Think first"}
+Density is the share of possible ties that exist. How does leaving out isolates change the density? Compute both by hand, then check with `edge_density()`.
+:::
+
+```{r}
+edge_density(g_without)
+edge_density(g_with)
+```
+
+## 4. Networks over time
+
+Panel network data needs to be sliced: one network per year (or per period).
+
+```{r}
+networks_by_year <- clean |>
+  group_split(year) |>
+  map(\(e) graph_from_data_frame(e, directed = FALSE, vertices = nodes))
+
+names(networks_by_year) <- sort(unique(clean$year))
+map_dbl(networks_by_year, edge_density)
+```
+
+## 5. The tidy way: tidygraph
+
+`tidygraph` lets you manipulate nodes and edges with dplyr verbs. `activate()` switches between the node table and the edge table.
+
+```{r}
+tg <- tbl_graph(nodes = nodes, edges = clean, directed = FALSE)
+tg
+
+tg |>
+  activate(nodes) |>
+  mutate(degree = centrality_degree()) |>
+  arrange(desc(degree))
+```
+
+## 6. Working with your own data
+
+Raw files go into `data/raw/`, cleaned ones into `data/processed/`. Always document the source in `data/README.md`.
+
+```{r}
+#| eval: false
+raw <- read_csv(here("data", "raw", "your_edgelist.csv"))
+# ... cleaning steps ...
+write_csv(clean, here("data", "processed", "edges_clean.csv"))
+```
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Repeat the cleaning above, but treat the relation as **directed**. How many ties do you get now?
+2. Write a short *cleaning log* (3–5 sentences) that justifies every decision you made.
+3. Using tidygraph, add a node column that marks isolates (`node_is_isolated()`) and count them per year.
+:::
+
+```{r}
+# your code here
+```

@@ -1,0 +1,132 @@
+---
+title: "Session 4: Descriptive and exploratory network analysis"
+subtitle: "Describing the whole network, positions within it, and groups"
+date: 2027-01-22
+---
+
+## Goals
+
+- describe a network at three levels: **whole network**, **nodes**, **groups**,
+- understand what each centrality measure actually counts,
+- detect communities and test for homophily,
+- visualise networks so the picture supports, rather than replaces, the analysis.
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+```
+
+We practise on a small, well-known network before moving to IR data. <!-- swap in the course dataset here -->
+
+```{r}
+g <- make_graph("Zachary")
+plot(g, vertex.size = 8, vertex.label.cex = 0.7)
+```
+
+## 1. Whole-network level
+
+::: {.callout-note title="Think first"}
+For each measure below, write down in one sentence what it counts *before* you run the code.
+:::
+
+```{r}
+tibble(
+  nodes        = vcount(g),
+  edges        = ecount(g),
+  density      = edge_density(g),
+  components   = components(g)$no,
+  transitivity = transitivity(g, type = "global"),
+  avg_path     = mean_distance(g),
+  diameter     = diameter(g)
+)
+```
+
+Degree distribution: are ties spread evenly or concentrated on a few nodes?
+
+```{r}
+tibble(degree = degree(g)) |>
+  ggplot(aes(degree)) +
+  geom_bar() +
+  labs(x = "Degree", y = "Number of nodes")
+```
+
+## 2. Node level: centrality
+
+Different centrality measures formalise different ideas of importance:
+
+| Measure | Idea | IR intuition |
+|---|---|---|
+| Degree | how many ties | number of trade partners |
+| Betweenness | how often on shortest paths between others | broker, gatekeeper |
+| Closeness | how close to everyone else | reach, speed of diffusion |
+| Eigenvector | tied to well-connected others | ties to great powers |
+
+```{r}
+centralities <- tibble(
+  node        = 1:vcount(g),
+  degree      = degree(g),
+  betweenness = betweenness(g),
+  closeness   = closeness(g),
+  eigenvector = eigen_centrality(g)$vector
+)
+
+centralities |> arrange(desc(betweenness)) |> head()
+```
+
+::: {.callout-note title="Think first"}
+Are the measures strongly correlated? Find a node that ranks high on one and low on another, and explain why using the network plot.
+:::
+
+```{r}
+cor(centralities[, -1], method = "spearman") |> round(2)
+```
+
+## 3. Group level: communities and homophily
+
+```{r}
+comm <- cluster_louvain(g)
+sizes(comm)
+modularity(comm)
+```
+
+**Homophily** (assortativity): do similar nodes tie to each other? Here we use degree: do well-connected nodes connect to other well-connected nodes?
+
+```{r}
+assortativity_degree(g)
+```
+
+With a node attribute such as regime type, `assortativity_nominal()` asks whether democracies tie to democracies.
+
+## 4. Visualisation with ggraph
+
+```{r}
+g |>
+  as_tbl_graph() |>
+  activate(nodes) |>
+  mutate(
+    betweenness = centrality_betweenness(),
+    community   = as.factor(group_louvain())
+  ) |>
+  ggraph(layout = "fr") +
+  geom_edge_link(alpha = 0.3) +
+  geom_node_point(aes(size = betweenness, colour = community)) +
+  theme_void()
+```
+
+::: {.callout-warning title="Discuss"}
+Re-run the plot several times. The layout changes, the network does not. What can and cannot be read from a network plot?
+:::
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Apply the whole-network table to the cleaned data from Session 3. Compare density with and without isolates.
+2. Identify the three most central nodes by degree and by betweenness. Interpret any difference substantively.
+3. Plot the network with node size = degree and colour = a node attribute of your choice.
+:::
+
+```{r}
+# your code here
+```
