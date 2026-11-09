@@ -17,8 +17,8 @@ By the end of this session you can
 ::: {.callout-note title="Think first (pen and paper, 10 min)"}
 Take five countries you know well. Write down
 
-1. one **attribute** of each country (e.g. GDP, regime type), and
-2. one **relation** between pairs of countries (e.g. "shares a border with").
+1.  one **attribute** of each country (e.g. GDP, regime type), and
+2.  one **relation** between pairs of countries (e.g. "shares a border with").
 
 How many values did you need for (1)? How many *possible* values for (2)? What happens to that number with 190 countries?
 :::
@@ -160,9 +160,9 @@ Regression assumes observations are **independent**. In a network, a tie between
 ## Your turn
 
 ::: {.callout-tip title="Exercise"}
-1. Build a directed network of five actors where *one* actor sends ties to everybody and nobody sends ties back. Plot it.
-2. Compute `degree(g, mode = "in")` and `degree(g, mode = "out")`. Explain the result in one sentence each.
-3. Name one IR phenomenon where direction matters and one where it does not.
+1.  Build a directed network of five actors where *one* actor sends ties to everybody and nobody sends ties back. Plot it.
+2.  Compute `degree(g, mode = "in")` and `degree(g, mode = "out")`. Explain the result in one sentence each.
+3.  Name one IR phenomenon where direction matters and one where it does not.
 :::
 
 ```{r}

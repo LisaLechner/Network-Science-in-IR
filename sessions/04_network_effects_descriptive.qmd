@@ -1,0 +1,375 @@
+---
+title: "Network effects: a descriptive introduction"
+subtitle: "Transitivity, preferential attachment, structural equivalence, homophily and heterophily"
+date: today
+---
+
+## Goals
+
+- know what each network effect predicts we should see in the data,
+- detect each pattern descriptively, on a toy network you can check by hand and on real data,
+- judge a pattern against a baseline: is it stronger than we would expect by chance?
+- understand why a descriptive pattern is not yet evidence of the mechanism behind it.
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(ggraph)
+
+set.seed(2026)
+```
+
+```{r}
+g <- make_graph("Zachary")          
+V(g)$name <- as.character(1:vcount(g))
+```
+
+## What is a network effect?
+
+In ordinary regression, we assume that whether A and B are tied depends only on A and B: their size, their regime type, the distance between them. A **network effect** is present when a tie also depends on the rest of the network: on who else A and B are tied to.
+
+| Effect | In one sentence | IR example |
+|---|---|---|
+| Transitivity | if A–B and B–C, then A–C is likely | partners of my partners become my partners |
+| Preferential attachment | nodes with many ties attract new ties more easily: the rich get richer | new states sign agreements with already well-connected states |
+| Structural equivalence | nodes tied to the same others behave alike, even if not tied to each other | small states that all depend on the same great power |
+| Homophily | similar nodes tie to each other | democracies ally with democracies |
+| Heterophily | dissimilar nodes tie to each other | arms exporters sell to importers, not to other exporters |
+
+For each effect this session asks the same three questions:
+
+1. What pattern should we see if the effect is at work?
+2. How do we measure that pattern?
+3. Compared to what? A number only means something next to a baseline.
+
+## 1. Transitivity
+
+### The pattern
+
+Take any two-step path A–B–C. Transitivity predicts that it tends to close into a triangle: A and C get tied too. So the signature is **more triangles than we would expect by chance**.
+
+```{r}
+open_triad   <- graph_from_literal(A-B, B-C)
+closed_triad <- graph_from_literal(A-B, B-C, A-C)
+
+par(mfrow = c(1, 2))
+plot(open_triad,   main = "open: A–B–C",       vertex.size = 30, vertex.color = "white")
+plot(closed_triad, main = "closed: triangle", vertex.size = 30, vertex.color = "white")
+par(mfrow = c(1, 1))
+```
+
+### The measure
+
+Global transitivity: of all two-step paths, what share is closed?
+
+$$
+\text{transitivity} = \frac{3 \times \text{number of triangles}}{\text{number of two-step paths}}
+$$
+
+The factor 3 appears because every triangle contains three two-step paths, one centred on each corner.
+
+```{r}
+count_triangles(g) |> sum() / 3   # number of triangles
+transitivity(g, type = "global")
+```
+
+### Compared to what?
+
+**Baseline 1: density.** In a random network, the chance that A and C are tied is simply the density, whether or not they share a partner B. So transitivity should be compared with density.
+
+```{r}
+c(transitivity = transitivity(g, type = "global"),
+  density      = edge_density(g))
+```
+
+In Zachary's karate club, transitivity is about 0.26 and density about 0.14: two partners of a node are almost twice as likely to be tied as two random nodes.
+
+**Baseline 2: random networks with the same degrees.** Hubs create many two-step paths, so some closure appears just because a few nodes are very active. A stricter test keeps every node's degree fixed, rewires all ties at random, and asks how much transitivity remains.
+
+```{r}
+random_trans <- replicate(500, {
+  sample_degseq(degree(g), method = "vl") |> transitivity(type = "global")
+})
+
+tibble(transitivity = random_trans) |>
+  ggplot(aes(transitivity)) +
+  geom_histogram(bins = 30, fill = "grey70") +
+  geom_vline(xintercept = transitivity(g, type = "global")) +
+  labs(x = "Transitivity in 500 random networks with the same degrees",
+       y = "Number of networks") +
+  theme_minimal()
+
+mean(random_trans >= transitivity(g, type = "global"))  # share of random networks at least as transitive
+```
+
+If the observed value (vertical line) lies far to the right of the random distribution, triangles are not just a by-product of who is active. Something closes them.
+
+::: {.callout-note title="Directed networks"}
+With directed ties, a triangle can take several forms: A→B→C with A→C is transitive, A→B→C→A is a cycle. `triad_census()` counts all 16 possible triad types. The transitive type is labelled `030T`, the cyclic one `030C`.
+:::
+
+## 2. Preferential attachment
+
+### The pattern
+
+If well-connected nodes attract new ties more easily, ties pile up on a few hubs over time. The signature has two parts:
+
+- **cross-section**: a very skewed degree distribution with a long tail of hubs,
+- **over time**: nodes with high degree today gain more new ties tomorrow.
+
+### Seeing the difference
+
+Two simulated networks of the same size and the same mean degree. One grows by preferential attachment, the other places ties at random.
+
+```{r}
+n <- 1000
+pa  <- sample_pa(n, m = 2, directed = FALSE)
+rnd <- sample_gnm(n, ecount(pa))
+
+degrees <- bind_rows(
+  tibble(model = "random",                   degree = degree(rnd)),
+  tibble(model = "preferential attachment", degree = degree(pa))
+)
+
+degrees |>
+  group_by(model) |>
+  summarise(mean = mean(degree), median = median(degree), max = max(degree))
+```
+
+Same mean, very different maximum. Plot both distributions on the same axes:
+
+```{r}
+degrees |>
+  count(model, degree) |>
+  ggplot(aes(degree, n)) +
+  geom_col(fill = "grey30") +
+  facet_wrap(~ model, ncol = 1) +   # same scales on both panels, so the shapes are comparable
+  labs(x = "Degree", y = "Number of nodes") +
+  theme_minimal()
+```
+
+The long tail is hard to see on a normal axis. The standard plot is the share of nodes with degree k or more, on log–log axes. A random network drops off steeply; preferential attachment gives a long, almost straight decline.
+
+```{r}
+degrees |>
+  group_by(model) |>
+  count(degree) |>
+  arrange(desc(degree)) |>
+  mutate(share_at_least = cumsum(n) / sum(n)) |>
+  ggplot(aes(degree, share_at_least, linetype = model)) +
+  geom_line() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Degree k (log)", y = "Share of nodes with degree ≥ k (log)", linetype = NULL) +
+  theme_minimal()
+```
+
+### Over time: do the rich get richer?
+
+With data observed at two points in time, we can look at the mechanism more directly. In the simulated network, nodes are added in order, so the first 500 nodes are the network "halfway through".
+
+```{r}
+early <- induced_subgraph(pa, 1:500)
+
+growth <- tibble(
+  degree_then = degree(early),
+  new_ties    = degree(pa)[1:500] - degree(early)
+)
+
+growth |>
+  ggplot(aes(degree_then, new_ties)) +
+  geom_jitter(width = 0.2, height = 0.2, alpha = 0.3) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  labs(x = "Degree halfway through", y = "New ties gained afterwards") +
+  theme_minimal()
+```
+
+The upward slope is the rich-get-richer signature. With real panel data the same plot works with degree in year t against new ties between t and t + 1.
+
+::: {.callout-warning title="A long tail is not proof"}
+A skewed degree distribution is consistent with preferential attachment, but other processes produce it too. If some states are simply bigger or richer and attract ties for that reason, their degree will be high without any rich-get-richer dynamic. The over-time plot, controlling for such attributes, is the more convincing evidence.
+:::
+
+## 3. Structural equivalence
+
+### The pattern
+
+Two nodes are **structurally equivalent** if they are tied to exactly the same others. They do not need to be tied to each other. The prediction is that equivalent nodes behave alike: they face the same opportunities and constraints, so they adopt similar policies, vote alike, or compete with each other.
+
+### A toy core–periphery network
+
+Two great powers P1 and P2 are allied. Four small states S1–S4 each have ties to both great powers, but not to each other.
+
+```{r}
+cp <- graph_from_literal(P1-P2,
+                         P1-S1, P1-S2, P1-S3, P1-S4,
+                         P2-S1, P2-S2, P2-S3, P2-S4)
+
+plot(cp, vertex.size = 25, vertex.color = "white")
+```
+
+S1 to S4 are perfectly equivalent: each is tied to P1 and P2 and nothing else. They are never tied to each other, so no clique or community method would put them together, yet they occupy the same position.
+
+### The measure
+
+Compare neighbourhoods. Jaccard similarity is the share of neighbours two nodes have in common, out of all neighbours either one has.
+
+```{r}
+neighbors(cp, "S1")
+neighbors(cp, "S2")   # identical
+
+sim_cp <- similarity(cp, method = "jaccard")
+dimnames(sim_cp) <- list(V(cp)$name, V(cp)$name)
+round(sim_cp, 2)
+```
+
+By hand:
+
+- S1 and S2: both have {P1, P2}. 2 shared of 2 → 1.
+- P1 and P2: P1 has {P2, S1–S4}, P2 has {P1, S1–S4}. 4 shared of 6 → 0.67. They are equivalent except that each counts the other as a neighbour.
+- P1 and S1: P1 has {P2, S1–S4}, S1 has {P1, P2}. Only P2 is shared, out of 6 → 0.17.
+
+### Finding positions in a larger network
+
+Group nodes with similar neighbourhoods, then reorder the adjacency matrix by group. If the network has clear positions, the matrix shows **blocks**: groups of rows that look alike.
+
+```{r}
+sim       <- similarity(g, method = "jaccard")
+positions <- hclust(as.dist(1 - sim), method = "average") |> cutree(k = 4)
+
+ord <- V(g)$name[order(positions)]
+adj <- as_adjacency_matrix(g, sparse = FALSE)[ord, ord]
+
+as.data.frame(as.table(adj)) |>
+  rename(row = Var1, col = Var2, tie = Freq) |>
+  mutate(row = factor(row, levels = rev(ord)),
+         col = factor(col, levels = ord)) |>
+  ggplot(aes(col, row, fill = factor(tie))) +
+  geom_tile() +
+  scale_fill_manual(values = c("0" = "white", "1" = "black"), guide = "none") +
+  coord_equal() +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 6))
+```
+
+Reading the picture: a solid black square on the diagonal is a cohesive group. A black block off the diagonal means one position ties to another, for example a periphery tied only to the core. A row of nodes with the same pattern is a structurally equivalent position.
+
+::: {.callout-note title="Think first"}
+In a global arms-trade network, would you expect Austria and Switzerland to be in the same community, the same structural position, both, or neither? What about two small states that both import only from Russia?
+:::
+
+## 4. Homophily
+
+### The pattern
+
+Similar nodes tie to each other more than we would expect by chance. The similarity is in an attribute: regime type, region, language, GDP.
+
+### A toy network
+
+Three democracies (D1–D3) and three autocracies (A1–A3). Five of the six ties link two countries of the same regime type.
+
+```{r}
+h <- graph_from_literal(D1-D2, D2-D3, D1-D3, A1-A2, A2-A3, D3-A1)
+V(h)$regime <- if_else(startsWith(V(h)$name, "D"), "democracy", "autocracy")
+
+plot(h, vertex.size = 25, vertex.label.cex = 1,
+     vertex.color = if_else(V(h)$regime == "democracy", "white", "grey60"))
+```
+
+### The measure, step by step
+
+**Step 1: the share of ties within the same group.** Here 5 of 6 ties, about 0.83.
+
+```{r}
+el     <- as_edgelist(h)
+regime <- setNames(V(h)$regime, V(h)$name)
+
+same_type <- regime[el[, 1]] == regime[el[, 2]]
+mean(same_type)   # 0.83
+```
+
+**Step 2: the baseline.** If ties were placed at random, what share would fall within groups? Count all pairs that could be tied: 6 × 5 / 2 = 15. Pairs of two democracies: 3. Pairs of two autocracies: 3. So 6 of 15 possible pairs, 0.4, are same-type. That is the share we would expect by chance.
+
+```{r}
+group_sizes <- table(V(h)$regime)
+sum(choose(group_sizes, 2)) / choose(vcount(h), 2)   # 0.4
+```
+
+Observed 0.83 against an expected 0.4: same-type ties are about twice as common as chance predicts.
+
+**Step 3: one summary number.** The **assortativity coefficient** combines both steps. It runs from −1 to +1: 0 means mixing as random, positive values mean homophily, negative values heterophily.
+
+```{r}
+assortativity_nominal(h, types = as.integer(factor(V(h)$regime)), directed = FALSE)  # 0.66
+```
+
+For a numeric attribute such as GDP, use `assortativity(h, values = ...)`. It asks whether countries with similar values tie to each other.
+
+### The mixing matrix
+
+With more than two groups, a single number hides which groups mix. The **mixing matrix** counts ties between each pair of groups. A heavy diagonal means homophily.
+
+```{r}
+table(from = regime[el[, 1]], to = regime[el[, 2]])
+```
+
+In an undirected network the order of the two ends is arbitrary, so add the matrix to its transpose before reading off-diagonal cells.
+
+## 5. Heterophily
+
+### The pattern
+
+The opposite of homophily: dissimilar nodes tie to each other more than chance predicts. It typically arises where ties are exchanges between complementary roles: exporters and importers, donors and recipients, patrons and clients.
+
+### A toy network
+
+The same six countries, but now every tie links a democracy and an autocracy.
+
+```{r}
+x <- graph_from_literal(D1-A1, D1-A2, D2-A2, D2-A3, D3-A3, D3-A1)
+V(x)$regime <- if_else(startsWith(V(x)$name, "D"), "democracy", "autocracy")
+
+assortativity_nominal(x, types = as.integer(factor(V(x)$regime)), directed = FALSE)  # −1
+```
+
+Perfect heterophily gives −1: no tie stays within a group.
+
+### Heterophily on degree: hubs and spokes
+
+Degree itself can be the attribute. **Degree assortativity** asks whether well-connected nodes tie to other well-connected nodes. A negative value means hubs tie to low-degree nodes: a hub-and-spoke or core–periphery structure.
+
+```{r}
+assortativity_degree(cp)  # −0.8: great powers tie to small states
+assortativity_degree(g)   # about −0.48 in Zachary's karate club
+```
+
+Many economic and infrastructure networks are degree-disassortative; many social networks are degree-assortative.
+
+## 6. From patterns to mechanisms
+
+Each effect leaves a pattern, but each pattern can come from more than one effect.
+
+| Observed pattern | Could come from |
+|---|---|
+| many triangles | transitivity, but also homophily: if democracies tie to democracies, triangles of democracies form without any closure mechanism |
+| skewed degree distribution | preferential attachment, but also stable differences in size or capacity |
+| similar behaviour of tied nodes | influence through the tie, or homophily in who ties to whom |
+| similar behaviour of equivalent nodes | structural equivalence, or shared attributes that put them in the same position |
+
+Descriptive analysis shows which patterns are there and how strong they are against a baseline. Separating the effects, for example transitivity from homophily, requires a model that includes them simultaneously. That is what ERGMs and stochastic actor-oriented models do, and why they come next.
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Compute transitivity and density for the course network. Then run the degree-preserving baseline. Is there more closure than the degrees alone produce?
+2. Plot the degree distribution and the log–log plot of the share of nodes with degree ≥ k. Does the network look more like the random or the preferential-attachment simulation?
+3. If you have two time points: plot degree at t against new ties gained until t + 1.
+4. Choose one categorical node attribute. Compute the share of same-type ties, the expected share, the assortativity coefficient and the mixing matrix. Is there homophily or heterophily?
+5. Compute degree assortativity. Is the network closer to a club of hubs or to a hub-and-spoke structure?
+6. For one pattern you found, write down two different mechanisms that could have produced it.
+:::
+
+```{r}
+# your code here
+```

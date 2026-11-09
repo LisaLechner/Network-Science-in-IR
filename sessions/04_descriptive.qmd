@@ -7,8 +7,9 @@ date: today
 ## Goals
 
 - describe a network at three levels: **whole network**, **nodes**, **groups**,
-- understand what each centrality measure actually counts,
-- detect communities and test for homophily,
+- understand what each measure actually counts, well enough to compute it by hand on a small network,
+- know the two meanings of an edge weight and which measures assume which,
+- measure clustering and divide a network into cohesive subgroups,
 - visualise networks so the picture supports, rather than replaces, the analysis.
 
 ```{r}
@@ -18,7 +19,19 @@ library(tidygraph)
 library(ggraph)
 ```
 
-We practise on a small, well-known network before moving to IR data. <!-- swap in the course dataset here -->
+## 0. A network small enough to count by hand
+
+Every measure in this session is first shown on a toy network of six countries. You can check every number with a pencil. Only then do we run the same code on real data.
+
+The toy network: A, B and C form a tight triangle. C is tied to D, and D is tied to E and F. Think of it as two regional clusters linked by a single connection C–D.
+
+```{r}
+toy <- graph_from_literal(A-B, A-C, B-C, C-D, D-E, D-F)
+
+plot(toy, vertex.size = 25, vertex.color = "white", vertex.label.cex = 1.2)
+```
+
+We practise on a small, well-known network before moving to IR data. 
 
 ```{r}
 g <- make_graph("Zachary")
@@ -28,14 +41,73 @@ plot(g, vertex.size = 8, vertex.label.cex = 0.7)
 ## 1. Whole-network level
 
 ::: {.callout-note title="Think first"}
-For each measure below, write down in one sentence what it counts *before* you run the code.
+For each measure below, write down in one sentence what it counts before you run the code.
 :::
+
+### Density and sparsity
+
+**Density** answers: of all the ties that could exist, what share actually exists?
+
+$$
+\text{density} = \frac{\text{ties that exist}}{\text{ties that could exist}}
+= \frac{L}{N(N-1)/2} \quad \text{(undirected)}
+\qquad
+\frac{L}{N(N-1)} \quad \text{(directed)}
+$$
+
+In the toy network, 6 countries could form 6 × 5 / 2 = 15 ties. Six exist, so density = 6/15 = 0.4.
+
+```{r}
+edge_density(toy)  # 0.4
+```
+
+**Sparsity** is the observation that real networks have very low density, and that density falls as networks grow. The reason is simple: the number of possible ties grows with N², but each actor can only maintain a limited number of ties.
+
+An IR example: if each of 193 states has about 10 bilateral investment treaties, density is roughly 10 / 192 ≈ 0.05. Doubling the number of states would roughly halve density, even though no state changed its behaviour.
+
+Two consequences:
+
+- **Do not compare densities across networks of different size.** A small network looks dense and a large one sparse almost by construction. Compare **mean degree** instead (Section 2).
+- **Isolates lower density.** Adding a state with no ties adds N − 1 possible ties and zero actual ones.
+
+```{r}
+toy_iso <- add_vertices(toy, 1, name = "G")  # one isolated country
+edge_density(toy_iso)                        # 6/21 ≈ 0.29: lower, though no tie changed
+```
+
+### Path length
+
+A **path** is a route from one node to another along existing ties. The **shortest path** (or **distance**) is the route with the fewest steps.
+
+In the toy network, A reaches E in 3 steps: A → C → D → E. There is no shorter route.
+
+```{r}
+distances(toy)                          # all pairwise distances, check row A by hand
+shortest_paths(toy, from = "A", to = "E")$vpath
+```
+
+Two summaries of the whole network:
+
+- **Average path length**: the mean distance over all pairs. How many steps does it typically take for information or influence to travel between two actors? Toy: 28 / 15 ≈ 1.87.
+- **Diameter**: the longest of all shortest paths. The worst case. Toy: 3 (A or B to E or F).
+
+```{r}
+mean_distance(toy)  # 1.87
+diameter(toy)       # 3
+```
+
+::: {.callout-warning title="Disconnected networks"}
+If two nodes cannot reach each other, their distance is infinite. igraph quietly drops those pairs: `mean_distance()` averages only over pairs that are connected. A network of many small, tight components can therefore show a short average path length. Always report the number of components alongside it.
+:::
+
+### Putting it together
 
 ```{r}
 tibble(
   nodes        = vcount(g),
   edges        = ecount(g),
   density      = edge_density(g),
+  mean_degree  = mean(degree(g)),
   components   = components(g)$no,
   transitivity = transitivity(g, type = "global"),
   avg_path     = mean_distance(g),
@@ -43,25 +115,116 @@ tibble(
 )
 ```
 
-Degree distribution: are ties spread evenly or concentrated on a few nodes?
+## 2. Node level: degree and centrality
+
+### Degree
+
+**Degree** is the number of ties a node has. In the toy network: A = 2, B = 2, C = 3, D = 3, E = 1, F = 1.
+
+```{r}
+degree(toy)
+```
+
+Mean degree is one number for the whole network, but it hides how ties are spread. In most real networks a few hubs hold many ties and most nodes hold few. A single hub can move the mean considerably while the median barely changes. So look at the whole **degree distribution**, and report the median next to the mean.
 
 ```{r}
 tibble(degree = degree(g)) |>
   ggplot(aes(degree)) +
   geom_bar() +
   labs(x = "Degree", y = "Number of nodes")
+
+c(mean = mean(degree(g)), median = median(degree(g)))
 ```
 
-## 2. Node level: centrality
+### In-degree and out-degree
 
-Different centrality measures formalise different ideas of importance:
+In a **directed** network a tie has a direction: A sends arms to B is not the same as B sends arms to A. Degree then splits in two:
 
-| Measure | Idea | IR intuition |
+- **Out-degree**: ties a node sends. Here: how many countries it exports arms to.
+- **In-degree**: ties a node receives. Here: how many countries it imports arms from.
+
+Toy arms-trade network (invented data):
+
+```{r}
+arms <- graph_from_literal(A-+B, A-+C, A-+D, B-+C, D-+C, E-+C)
+
+plot(arms, vertex.size = 25, vertex.color = "white",
+     vertex.label.cex = 1.2, edge.arrow.size = 0.6)
+
+tibble(
+  country = V(arms)$name,
+  out     = degree(arms, mode = "out"),
+  `in`    = degree(arms, mode = "in"),
+  total   = degree(arms, mode = "all")
+)
+```
+
+A and C both have high total degree, but for opposite reasons. A is a **supplier** (out-degree 3, in-degree 0). C is a **dependent importer** (out-degree 0, in-degree 4). Total degree erases exactly the distinction that matters substantively. With directed data, always look at both directions separately.
+
+### Closeness
+
+**Closeness** asks: how few steps does a node need to reach everyone else?
+
+Add up a node's distances to all others. Small sum = close to everyone. Closeness is the inverse of that sum, so that higher means more central.
+
+$$
+\text{closeness}(i) = \frac{1}{\sum_{j} d(i,j)}
+$$
+
+Toy network, by hand:
+
+| Node | Distances to the others | Sum | Closeness |
+|---|---|---|---|
+| A | B 1, C 1, D 2, E 3, F 3 | 10 | 1/10 |
+| C | A 1, B 1, D 1, E 2, F 2 | 7 | 1/7 |
+| D | C 1, E 1, F 1, A 2, B 2 | 7 | 1/7 |
+| E | D 1, F 2, C 2, A 3, B 3 | 11 | 1/11 |
+
+C and D sit in the middle: everything is at most 2 steps away. E sits at the edge.
+
+```{r}
+closeness(toy)
+```
+
+IR intuition: a country with high closeness can reach (or be reached by) everyone through few intermediaries, so information, norms or shocks arrive there early.
+
+::: {.callout-warning title="Closeness in disconnected networks"}
+With unreachable nodes the sum of distances is infinite. igraph then computes closeness only over the nodes a node can reach, so a node in a tiny isolated pair can look very "close". `harmonic_centrality()` is the cleaner alternative: it sums 1/distance, and unreachable nodes simply contribute 0.
+:::
+
+### Betweenness
+
+**Betweenness** asks: how often does a node lie on the shortest path between two others? Count, for every pair of other nodes, whether their shortest path passes through the node.
+
+Toy network: every path from the triangle {A, B, C} to {E, F} must pass through D. That is 3 × 2 = 6 pairs, plus E–F, which also runs through D: betweenness of D = 7. C lies on the paths from {A, B} to {D, E, F}: 2 × 3 = 6. A, B, E and F lie on no one's shortest path: 0.
+
+```{r}
+betweenness(toy)  # C = 6, D = 7, all others 0
+```
+
+Note that C and D have identical closeness but different betweenness. Closeness measures reach; betweenness measures control over flows between others, the broker or gatekeeper position.
+
+### Eigenvector centrality and PageRank
+
+Degree counts ties. **Eigenvector centrality** asks whether those ties lead to important nodes: a node is central if its neighbours are central. A small state with three ties to great powers can outrank a state with ten ties to other small states.
+
+**PageRank** is the directed version of the same idea, built for networks like the arms trade or citations. Being pointed to by an important node counts more than being pointed to by an unimportant one, and an important node's endorsement is split across everyone it points to.
+
+```{r}
+eigen_centrality(toy)$vector
+page_rank(arms)$vector   # C, the importer everyone sends to, ranks highest
+```
+
+### Comparing the measures
+
+| Measure | Counts | IR intuition |
 |---|---|---|
-| Degree | how many ties | number of trade partners |
+| Degree | number of ties | number of trade partners |
+| In-/out-degree | ties received / sent | importer vs exporter, target vs sender |
+| Closeness | how few steps to reach everyone | reach, speed of diffusion |
 | Betweenness | how often on shortest paths between others | broker, gatekeeper |
-| Closeness | how close to everyone else | reach, speed of diffusion |
-| Eigenvector | tied to well-connected others | ties to great powers |
+| Eigenvector | ties to well-connected others | ties to great powers |
+| PageRank | being pointed to by important nodes | directed status, e.g. citations, recognition |
 
 ```{r}
 centralities <- tibble(
@@ -69,7 +232,8 @@ centralities <- tibble(
   degree      = degree(g),
   betweenness = betweenness(g),
   closeness   = closeness(g),
-  eigenvector = eigen_centrality(g)$vector
+  eigenvector = eigen_centrality(g)$vector,
+  pagerank    = page_rank(g)$vector
 )
 
 centralities |> arrange(desc(betweenness)) |> head()
@@ -83,23 +247,182 @@ Are the measures strongly correlated? Find a node that ranks high on one and low
 cor(centralities[, -1], method = "spearman") |> round(2)
 ```
 
-## 3. Group level: communities and homophily
+## 3. Weighted networks: what does a weight mean?
+
+So far a tie either exists or not. Often ties have a size: trade volume, number of joint exercises, number of shared IGO memberships. That size is stored as an edge **weight**. The crucial question is what a larger number means. There are two opposite readings.
+
+### Reading A: weight = strength
+
+Higher weight = stronger tie: more trade, more interaction, more influence, more similarity. A tie with weight 10 matters more than a tie with weight 1.
+
+Measures that read weights this way:
+
+- **strength**: the weighted version of degree, the sum of a node's tie weights (`strength()`),
+- **eigenvector centrality** (`eigen_centrality()`),
+- **PageRank** (`page_rank()`),
+- **weighted adjacency matrices**, where the cell holds the weight instead of 1.
+
+### Reading B: weight = distance or cost
+
+Higher weight = harder to traverse: more friction, more distance, more cost. Think of travel time or kilometres. A route of weight 10 is worse than a route of weight 1.
+
+Measures that read weights this way are everything built on **shortest paths**:
+
+- **shortest paths and distances** (`distances()`, `shortest_paths()`),
+- **average path length and diameter**,
+- **closeness**,
+- **betweenness**,
+- **distance matrices**.
+
+A shortest-path algorithm looks for the cheapest route. It has no idea that your numbers mean "friendship".
+
+::: {.callout-important title="igraph's default"}
+If your graph has an edge attribute called `weight`, igraph uses it automatically, and every path-based function interprets it as reading B, a cost. If your weights mean strength, path-based results will be silently wrong: they route through the weakest ties.
+:::
+
+### The trap, step by step
+
+Four countries. A and D can be connected through B (two strong trade ties, volume 10) or through C (two weak ties, volume 1).
 
 ```{r}
+trade <- graph_from_data_frame(
+  tibble(from   = c("A", "B", "A", "C"),
+         to     = c("B", "D", "C", "D"),
+         weight = c(10,  10,  1,   1)),
+  directed = FALSE
+)
+
+plot(trade, edge.width = E(trade)$weight, edge.label = E(trade)$weight,
+     vertex.size = 25, vertex.color = "white", vertex.label.cex = 1.2)
+```
+
+Substantively, trade between A and D should flow through B, the strong route. Now ask igraph:
+
+```{r}
+shortest_paths(trade, from = "A", to = "D")$vpath  # A -> C -> D
+betweenness(trade)                                 # C is the broker, B is not
+```
+
+igraph adds up the weights as costs: via B costs 10 + 10 = 20, via C costs 1 + 1 = 2. So it picks the weak route and crowns C as broker. Exactly backwards.
+
+### The fix: convert strength into distance
+
+Turn strength into cost before running any path-based measure. The usual conversion is the inverse: a strong tie becomes a short distance.
+
+```{r}
+dist_w <- 1 / E(trade)$weight   # 10 -> 0.1, 1 -> 1
+
+shortest_paths(trade, from = "A", to = "D", weights = dist_w)$vpath  # A -> B -> D
+betweenness(trade, weights = dist_w)                                 # now B is the broker
+closeness(trade, weights = dist_w)
+```
+
+Now via B costs 0.1 + 0.1 = 0.2 and via C costs 1 + 1 = 2, so B wins, as it should.
+
+Strength-based measures need no conversion, because they already read the weight as strength:
+
+```{r}
+strength(trade)                                    # weighted degree: B and D = 20
+eigen_centrality(trade)$vector
+as_adjacency_matrix(trade, attr = "weight", sparse = FALSE)
+```
+
+To ignore weights altogether in a path-based function, pass `weights = NA`.
+
+### Rule of thumb
+
+| If your weight means… | strength, degree-like, eigenvector, PageRank | paths, closeness, betweenness |
+|---|---|---|
+| **strength** (trade volume, interactions) | use as is | convert first, e.g. `1 / weight` |
+| **cost** (distance, travel time) | convert first, e.g. `1 / weight` | use as is |
+
+::: {.callout-note title="Think first"}
+Number of shared IGO memberships, kilometres between capitals, years of rivalry, number of UN votes in agreement: for each, is it a strength or a cost? Which measures could you run without conversion?
+:::
+
+## 4. Group level: clustering and subgroups
+
+### Clustering: are my partners partners of each other?
+
+Take a node and look only at its neighbours. How many of them are tied to each other? That is the **local clustering coefficient**:
+
+$$
+C_i = \frac{2L_i}{k_i(k_i - 1)}
+$$
+
+where $k_i$ is the degree of node $i$ and $L_i$ the number of ties among its neighbours. The denominator is the number of ties the neighbours could have among themselves, so $C_i$ is again a density, but only within node $i$'s neighbourhood.
+
+- $C_i = 0$: none of my partners are partners of each other. I hold a star, a hub-and-spoke position.
+- $C_i = 1$: all my partners are tied to each other. I sit inside a closed clique.
+- $C_i = 0.5$: if I pick two of my partners at random, there is a 50% chance they are tied.
+
+Toy network, by hand:
+
+| Node | Neighbours | Possible ties among them | Existing | $C_i$ |
+|---|---|---|---|---|
+| A | B, C | 1 | B–C | 1 |
+| B | A, C | 1 | A–C | 1 |
+| C | A, B, D | 3 | A–B | 1/3 |
+| D | C, E, F | 3 | none | 0 |
+| E, F | D | 0 | – | undefined |
+
+D is the clearest case of a broker: three partners who do not know each other. Its clustering is 0, and its betweenness was the highest (Section 2). Low clustering and high betweenness typically go together.
+
+Nodes with degree 1 have no pair of neighbours, so $C_i$ is undefined. igraph returns `NaN`.
+
+```{r}
+transitivity(toy, type = "local")   # A 1, B 1, C 0.33, D 0, E NaN, F NaN
+```
+
+For the whole network there are two summaries, and they are not the same number:
+
+- **Average clustering**: the mean of the local $C_i$. Toy: (1 + 1 + 1/3 + 0) / 4 ≈ 0.58, averaging over the four nodes where it is defined.
+- **Global clustering** (transitivity): of all two-step paths A–C–B in the network, what share is closed into a triangle? Toy: 1 triangle, 8 two-step paths, 3 × 1 / 8 = 0.375. This is the `transitivity` in the whole-network table of Section 1.
+
+```{r}
+transitivity(toy, type = "average")  # 0.58
+transitivity(toy, type = "global")   # 0.375
+```
+
+The average gives every node equal weight, so many small closed groups push it up. The global measure is dominated by high-degree nodes, which have many two-step paths. Report which one you use.
+
+### Dividing the network into subgroups
+
+There are two ways to split a network into groups:
+
+- **Cohesive subgroups**: nodes densely tied to each other. Who sticks together? Covered here.
+- **Structurally similar subgroups**: nodes tied to the same others, whether or not they are tied to each other. Who plays the same role? Covered in the session on network effects, together with structural equivalence.
+
+### Cohesive subgroups
+
+From strictest to loosest:
+
+- **Clique**: every member is tied to every other member. Very strict, and real networks have few large cliques.
+- **k-core**: every member is tied to at least k other members of the group. Looser, and useful for finding the densely connected centre of a large network.
+- **Community**: more ties inside the group than between groups. The loosest and most common definition.
+
+Toy network: A, B and C form the only clique of size three. The 2-core is also {A, B, C}: D has three ties, but once E and F (degree 1) are removed, D is left with only one.
+
+```{r}
+largest_cliques(toy)   # A, B, C
+coreness(toy)          # A, B, C = 2; D, E, F = 1
+```
+
+**Community detection** algorithms search for the division that maximises **modularity**: the share of ties that fall within groups, minus the share we would expect if ties were placed at random. Modularity near 0 means the groups are no better than chance; values above about 0.3 indicate clear community structure.
+
+```{r}
+cluster_louvain(toy) |> membership()   # {A, B, C} and {D, E, F}
+
 comm <- cluster_louvain(g)
 sizes(comm)
 modularity(comm)
 ```
 
-**Homophily** (assortativity): do similar nodes tie to each other? Here we use degree: do well-connected nodes connect to other well-connected nodes?
+::: {.callout-warning title="Communities are found, not given"}
+Community detection always returns groups, even in a random network. Different algorithms (`cluster_louvain()`, `cluster_walktrap()`, `cluster_leiden()`) and even repeated runs of the same algorithm can give different divisions. Check modularity, compare algorithms, and ask whether the groups make substantive sense before interpreting them.
+:::
 
-```{r}
-assortativity_degree(g)
-```
-
-With a node attribute such as regime type, `assortativity_nominal()` asks whether democracies tie to democracies.
-
-## 4. Visualisation with ggraph
+## 5. Visualisation with ggraph
 
 ```{r}
 g |>
@@ -122,9 +445,13 @@ Re-run the plot several times. The layout changes, the network does not. What ca
 ## Your turn
 
 ::: {.callout-tip title="Exercise"}
-1. Apply the whole-network table to the cleaned data from Session 3. Compare density with and without isolates.
+1. Apply the whole-network table to the cleaned data from Session 3. Compare density with and without isolates. Then compare mean degree with and without isolates. Which of the two changes more, and why?
 2. Identify the three most central nodes by degree and by betweenness. Interpret any difference substantively.
-3. Plot the network with node size = degree and colour = a node attribute of your choice.
+3. If your data are directed, compute in- and out-degree separately. Which countries are senders, which are receivers, and which are both?
+4. If your data are weighted, decide whether the weight is a strength or a cost. Compute betweenness once with the raw weights and once with the correct conversion. How much does the top-five ranking change?
+5. Find the three nodes with the lowest local clustering among those with degree 3 or more, and check their betweenness.
+6. Run `cluster_louvain()` and `cluster_walktrap()`. Do they find the same communities? Which division is more plausible substantively?
+7. Plot the network with node size = degree and colour = a node attribute of your choice.
 :::
 
 ```{r}
