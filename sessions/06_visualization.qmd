@@ -1,0 +1,463 @@
+---
+title: "Session 6: Visualising networks"
+subtitle: "The story decides the figure, and sometimes the figure is not a network"
+date: today
+---
+
+## Goals
+
+- decide what a figure should show before choosing how to draw it,
+- understand the placement problem and what each layout algorithm does,
+- choose a layout that matches the story: who is connected, who is central, what is where,
+- encode size, strength and groups without producing a hairball,
+- recognise when a dot plot, bar chart, beeswarm or matrix shows the pattern better than a network drawing.
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(ggbeeswarm)   # beeswarm plots
+library(circlize)     # chord diagrams
+library(maps)         # world outline for the map layout
+
+# Set base_family to the font of your LaTeX document, e.g. "Latin Modern Roman"
+theme_set(theme_minimal(base_family = ""))
+
+region_cols <- c(Europe = "#4C6A92", Americas = "#B5651D",
+                 Asia   = "#5B8C5A", Africa   = "#8E5B8E")
+```
+
+## 1. Toy data: an invented export network
+
+Twenty-four countries in four regions. The trade values are invented, but generated so that the network behaves like real trade: large economies export to more partners, and countries trade more within their own region. Everyone who runs this code gets the same network.
+
+```{r}
+countries <- tribble(
+  ~id,   ~region,    ~mass, ~lon,   ~lat,
+  "DEU", "Europe",   5,     13.4,   52.5,
+  "FRA", "Europe",   4,      2.4,   48.9,
+  "ITA", "Europe",   3,     12.5,   41.9,
+  "NLD", "Europe",   3,      4.9,   52.4,
+  "POL", "Europe",   2,     21.0,   52.2,
+  "AUT", "Europe",   2,     16.4,   48.2,
+  "USA", "Americas", 5,    -77.0,   38.9,
+  "CAN", "Americas", 3,    -75.7,   45.4,
+  "MEX", "Americas", 3,    -99.1,   19.4,
+  "BRA", "Americas", 3,    -47.9,  -15.8,
+  "ARG", "Americas", 2,    -58.4,  -34.6,
+  "CHL", "Americas", 2,    -70.7,  -33.4,
+  "CHN", "Asia",     5,    116.4,   39.9,
+  "JPN", "Asia",     4,    139.7,   35.7,
+  "KOR", "Asia",     3,    127.0,   37.6,
+  "IND", "Asia",     4,     77.2,   28.6,
+  "IDN", "Asia",     3,    106.8,   -6.2,
+  "VNM", "Asia",     2,    105.8,   21.0,
+  "ZAF", "Africa",   2,     28.2,  -25.7,
+  "NGA", "Africa",   2,      7.5,    9.1,
+  "EGY", "Africa",   2,     31.2,   30.0,
+  "KEN", "Africa",   1,     36.8,   -1.3,
+  "MAR", "Africa",   1,     -6.8,   34.0,
+  "GHA", "Africa",   1,     -0.2,    5.6
+)
+
+make_exports <- function(countries, seed) {
+  set.seed(seed)
+  expand_grid(from = countries$id, to = countries$id) |>
+    filter(from != to) |>
+    left_join(select(countries, from = id, region_from = region, mass_from = mass), by = "from") |>
+    left_join(select(countries, to = id,   region_to = region,   mass_to = mass),   by = "to") |>
+    mutate(p   = plogis(-4.5 + 0.6 * mass_from + 0.4 * mass_to + 1.5 * (region_from == region_to)),
+           tie = runif(n()) < p) |>
+    filter(tie) |>
+    mutate(value = round(rlnorm(n(), meanlog = 0.4 * (mass_from + mass_to) - 1, sdlog = 0.6), 1)) |>
+    select(from, to, value)
+}
+
+exports <- make_exports(countries, seed = 2026)
+
+export_net <- graph_from_data_frame(exports, directed = TRUE, vertices = countries)
+
+V(export_net)$out_strength <- strength(export_net, mode = "out", weights = E(export_net)$value)
+V(export_net)$in_strength  <- strength(export_net, mode = "in",  weights = E(export_net)$value)
+V(export_net)$degree       <- degree(export_net, mode = "all")
+
+c(countries = vcount(export_net), export_ties = ecount(export_net),
+  density = round(edge_density(export_net), 2))
+```
+
+::: {.callout-note title="Why the edge attribute is called value, not weight"}
+igraph uses an edge attribute called `weight` automatically, and different functions read it differently. `layout_with_fr()` treats a larger weight as a stronger pull, `layout_with_kk()` as a longer distance (Session 4). Calling the attribute `value` means nothing is used unless we pass it on purpose.
+:::
+
+## 2. First decide the story, then the figure
+
+Cartography was the first visual form of networks: roads, rivers and trade routes answer the question "what is where". A network drawing, by contrast, has no natural coordinates. Every position on the page is a choice, so the first step is to decide what the figure should show.
+
+| Goal | The question | Often best shown as |
+|---|---|---|
+| Key actors | who matters most? | dot plot of centrality |
+| Relationship strength | which ties are strongest? | network with edge width, or matrix |
+| Structural properties | are there triangles, brokers, a core? | network |
+| Communities | which groups exist? | network coloured by group, or ordered matrix |
+| Diffusion | how does something spread? | network, or small multiples over time |
+| Network evolution | what changed between t₁ and t₂? | slope chart, or small multiples |
+| Networks as maps | where are the ties? | geographic layout |
+| Persuasion and art | what should the viewer feel? | network, freely designed |
+
+Only some of these goals need a network drawing at all. Section 6 shows the alternatives.
+
+## 3. The placement problem
+
+A network is a list of who is tied to whom. To draw it, every node needs an x and a y coordinate, and nothing in the data says what they should be. That is the **placement problem**. The same network can look completely different depending on how it is solved.
+
+### Random placement: why we need an algorithm
+
+```{r}
+set.seed(1)
+plot(export_net, layout = layout_randomly(export_net),
+     vertex.size = 6, vertex.label.cex = 0.6, vertex.color = "white",
+     edge.color = "grey85", edge.arrow.size = 0.2)
+```
+
+The positions carry no information. Nodes that trade heavily may sit at opposite corners, and the edges cross everywhere. Every pattern you think you see is an accident.
+
+### The same network, eight layouts
+
+```{r}
+#| fig-height: 9
+layouts <- list(
+  "random"          = layout_randomly,
+  "circle"          = layout_in_circle,
+  "sphere"          = \(x) layout_on_sphere(x)[, 1:2],
+  "Fruchterman–Reingold" = layout_with_fr,
+  "Kamada–Kawai"    = \(x) layout_with_kk(x, weights = NA),
+  "GEM"             = layout_with_gem,
+  "Davidson–Harel"  = layout_with_dh,
+  "tree"            = layout_as_tree
+)
+
+set.seed(1)
+par(mfrow = c(4, 2), mar = c(0.5, 0.5, 2, 0.5))
+for (nm in names(layouts)) {
+  plot(export_net, layout = layouts[[nm]](export_net), main = nm,
+       vertex.size = 7, vertex.label.cex = 0.5, vertex.color = "white",
+       vertex.frame.color = "grey40", edge.color = "grey85", edge.arrow.size = 0.15)
+}
+par(mfrow = c(1, 1))
+```
+
+| Layout | How it works | Best for | Avoid when |
+|---|---|---|---|
+| Random | random coordinates | nothing, except to show why layouts matter | always |
+| Circle | all nodes evenly around a circle | listing all actors without hierarchy, e.g. rotating presidencies; grouped flows when ordered by group | you want to show centrality, clustering or hierarchy |
+| Sphere | nodes spread on a 3D sphere, projected to 2D | interactive 3D displays, aesthetic or "planetary" images | static figures: the projection creates arbitrary overlaps |
+| Fruchterman–Reingold | ties are springs that pull, nodes are charges that repel | default for trade, alliance and diplomatic networks: clusters appear naturally | very large networks (>500 nodes), or when hierarchy should be visible |
+| Kamada–Kawai | tries to make distance on the page match network distance | smaller, denser networks where relative position matters, e.g. regional blocs | more than about 100 nodes, it gets slow |
+| GEM | another force-directed variant | when FR looks cluttered | FR already works |
+| Davidson–Harel | optimises several aesthetic criteria at once, e.g. few crossings | publication figures of medium-sized networks | very large networks |
+| Tree | root at the top, levels below | hierarchies: lending, ownership, dependency chains (Section 4) | networks with cycles, i.e. most IR networks |
+
+### Force-directed layouts are not unique
+
+Spring layouts start from random positions. Run the same layout twice and you get two different pictures of the same network.
+
+```{r}
+par(mfrow = c(1, 2), mar = c(0.5, 0.5, 2, 0.5))
+for (s in c(1, 2)) {
+  set.seed(s)
+  plot(export_net, layout = layout_with_fr(export_net), main = paste("FR, seed", s),
+       vertex.size = 7, vertex.label.cex = 0.5, vertex.color = "white",
+       edge.color = "grey85", edge.arrow.size = 0.15)
+}
+par(mfrow = c(1, 1))
+```
+
+::: {.callout-warning title="What can and cannot be read from a spring layout"}
+Readable: who is connected to whom, which nodes cluster together, which nodes sit on the periphery. Not readable: left versus right, top versus bottom, exact distances. Rotate or mirror the figure and nothing has changed. Always fix the seed so your figure can be reproduced.
+:::
+
+## 4. The layout follows the story
+
+The German capital-ties example from the lecture shows the same network twice: as a spring layout ("who is connected?") and as a radial layout ("who is at the centre?"). Each layout answers one question well and others badly. We do the same with the toy data.
+
+### Who is connected? A spring layout
+
+```{r}
+set.seed(1)
+ggraph(export_net, layout = "fr") +
+  geom_edge_link(colour = "grey85", arrow = arrow(length = unit(1.5, "mm")),
+                 end_cap = circle(2, "mm")) +
+  geom_node_point(aes(colour = region), size = 3) +
+  geom_node_text(aes(label = name), size = 2.5, repel = TRUE) +
+  scale_colour_manual(values = region_cols) +
+  theme_void() +
+  labs(colour = NULL)
+```
+
+### Who is central? A radial layout
+
+A radial layout puts the most important nodes in the middle and the least important on the outside. There is no magic in it: we compute the coordinates ourselves. The radius comes from export strength, the angle from the region, so regions form slices.
+
+```{r}
+radial <- as_data_frame(export_net, what = "vertices") |>
+  arrange(region, desc(out_strength)) |>
+  mutate(angle  = seq(0, 2 * pi, length.out = n() + 1)[-1],
+         radius = 1 - percent_rank(out_strength) * 0.9,   # strongest exporter near the centre
+         x      = radius * cos(angle),
+         y      = radius * sin(angle))
+
+radial_coords <- radial[match(V(export_net)$name, radial$name), ]
+
+ggraph(export_net, layout = "manual", x = radial_coords$x, y = radial_coords$y) +
+  geom_edge_link(aes(alpha = value), colour = "grey50", show.legend = FALSE) +
+  geom_node_point(aes(size = out_strength, colour = region)) +
+  geom_node_text(aes(label = name), size = 2.5, repel = TRUE) +
+  scale_colour_manual(values = region_cols) +
+  scale_edge_alpha(range = c(0.05, 0.5)) +
+  coord_equal() +
+  theme_void() +
+  labs(colour = NULL, size = "Exports")
+```
+
+### What is where? A map layout
+
+When geography is part of the story, use real coordinates. The layout is then no longer a choice: the map provides it.
+
+```{r}
+world <- map_data("world")
+
+ggraph(export_net, layout = "manual", x = V(export_net)$lon, y = V(export_net)$lat) +
+  geom_polygon(data = world, aes(long, lat, group = group),
+               fill = "grey95", colour = "grey85", linewidth = 0.1) +
+  geom_edge_arc(aes(alpha = value), strength = 0.15, colour = "grey30", show.legend = FALSE) +
+  geom_node_point(aes(size = out_strength, colour = region)) +
+  scale_colour_manual(values = region_cols) +
+  scale_edge_alpha(range = c(0.03, 0.4)) +
+  coord_quickmap(ylim = c(-50, 70)) +
+  theme_void() +
+  labs(colour = NULL, size = "Exports")
+```
+
+### Hierarchy: a tree layout
+
+A tree layout only fits networks without cycles. Most IR networks have cycles, but some structures are genuinely hierarchical, for example lending through intermediaries. A toy example:
+
+```{r}
+lending <- graph_from_literal(IMF -+ RegionalFund1, IMF -+ RegionalFund2,
+                              RegionalFund1 -+ KEN, RegionalFund1 -+ GHA, RegionalFund1 -+ NGA,
+                              RegionalFund2 -+ VNM, RegionalFund2 -+ IDN)
+
+plot(lending, layout = layout_as_tree(lending, root = "IMF"),
+     vertex.shape = "none", vertex.label.cex = 0.8, edge.arrow.size = 0.3, edge.color = "grey60")
+```
+
+### Flows between groups: circle and chord diagram
+
+A circle layout becomes useful once nodes are ordered by group: flows within and between groups become visible. A chord diagram takes this one step further and draws aggregated flows as bands whose width is the trade volume.
+
+```{r}
+region_flows <- exports |>
+  left_join(select(countries, from = id, from_region = region), by = "from") |>
+  left_join(select(countries, to = id,   to_region = region),   by = "to") |>
+  count(from_region, to_region, wt = value, name = "value")
+
+chordDiagram(region_flows, grid.col = region_cols, transparency = 0.5,
+             directional = 1, direction.type = "arrows", link.arr.type = "big.arrow",
+             annotationTrack = c("name", "grid"))
+circos.clear()
+```
+
+## 5. Encoding: avoiding the hairball
+
+Every visual property can carry one variable. Use few of them, and only for what the story needs.
+
+| Visual property | Typical variable |
+|---|---|
+| node size | degree, strength, GDP |
+| node colour | group: region, regime type, community |
+| edge width or transparency | tie strength |
+| labels | only the nodes the reader needs to find |
+
+The most effective step is often to show fewer ties. Here we keep only the strongest quarter of export flows, the **backbone**, and label only the largest exporters.
+
+```{r}
+backbone <- export_net |>
+  as_tbl_graph() |>
+  activate(edges) |>
+  filter(value >= quantile(value, 0.75)) |>
+  activate(nodes) |>
+  mutate(label = if_else(out_strength >= quantile(out_strength, 0.75), name, NA_character_))
+
+set.seed(1)
+ggraph(backbone, layout = "fr") +
+  geom_edge_link(aes(width = value), colour = "grey70", alpha = 0.7,
+                 arrow = arrow(length = unit(1.5, "mm")), end_cap = circle(3, "mm")) +
+  geom_node_point(aes(size = out_strength, colour = region)) +
+  geom_node_text(aes(label = label), size = 3, repel = TRUE, na.rm = TRUE) +
+  scale_edge_width(range = c(0.2, 2), guide = "none") +
+  scale_colour_manual(values = region_cols) +
+  theme_void() +
+  labs(colour = NULL, size = "Exports")
+```
+
+::: {.callout-warning title="Thresholds are analytical choices"}
+Dropping weak ties changes the picture, and it can change the story: isolated countries may simply be those whose ties all fell below the threshold. Report the threshold, and check that the main pattern survives a different one.
+:::
+
+## 6. When not to draw a network
+
+A network drawing shows everything at once, and that is its problem. Most research questions ask about one thing: who is most central, how two groups differ, what changed. For those, classical figures are usually clearer. Their positions are measured on a common axis, so the eye can compare values directly instead of guessing from node sizes and overlapping lines.
+
+### Who is most important? A dot plot
+
+Compare the radial layout above with this:
+
+```{r}
+as_data_frame(export_net, what = "vertices") |>
+  mutate(name = fct_reorder(name, out_strength)) |>
+  ggplot(aes(out_strength, name, colour = region)) +
+  geom_segment(aes(x = 0, xend = out_strength, yend = name), colour = "grey90") +
+  geom_point(size = 2.5) +
+  scale_colour_manual(values = region_cols) +
+  labs(x = "Total exports (invented units)", y = NULL, colour = NULL) +
+  theme(panel.grid.major.y = element_blank())
+```
+
+Every country is readable, the ranking is exact, and the regional pattern is visible at a glance. A network drawing cannot do this.
+
+### Exporter or importer? A dumbbell plot
+
+Two values per country: in a network you would need arrows and careful inspection; here one line per country does it.
+
+```{r}
+as_data_frame(export_net, what = "vertices") |>
+  mutate(name = fct_reorder(name, out_strength - in_strength)) |>
+  ggplot(aes(y = name)) +
+  geom_segment(aes(x = in_strength, xend = out_strength, yend = name), colour = "grey80") +
+  geom_point(aes(x = in_strength), shape = 1, size = 2.5) +
+  geom_point(aes(x = out_strength), shape = 16, size = 2.5) +
+  labs(x = "Trade volume: open circle = imports, filled = exports", y = NULL) +
+  theme(panel.grid.major.y = element_blank())
+```
+
+Countries at the top export more than they import; countries at the bottom depend on imports.
+
+### How do regions differ? A beeswarm
+
+A bar chart of averages would hide the spread. A beeswarm shows every country as one point, grouped by region.
+
+```{r}
+as_data_frame(export_net, what = "vertices") |>
+  ggplot(aes(region, degree, colour = region)) +
+  geom_beeswarm(size = 2.5, cex = 3) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.4, colour = "black", linewidth = 0.3) +
+  scale_colour_manual(values = region_cols, guide = "none") +
+  labs(x = NULL, y = "Number of trade ties (exports + imports)")
+```
+
+### Who trades with whom? An adjacency matrix
+
+For dense networks, a matrix beats a node-link drawing: there are no crossing lines, every possible tie has its own cell, and absent ties are just as visible as present ones. Ordering rows and columns by region reveals the blocks.
+
+```{r}
+ord <- countries |> arrange(region, desc(mass)) |> pull(id)
+
+exports |>
+  complete(from = ord, to = ord, fill = list(value = NA)) |>
+  mutate(from = factor(from, levels = rev(ord)),
+         to   = factor(to,   levels = ord)) |>
+  ggplot(aes(to, from, fill = value)) +
+  geom_tile(colour = "white", linewidth = 0.3) +
+  scale_fill_gradient(low = "grey85", high = "black", na.value = "white",
+                      trans = "log10", name = "Exports") +
+  coord_equal() +
+  labs(x = "Importer", y = "Exporter") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7),
+        axis.text.y = element_text(size = 7),
+        panel.grid  = element_blank())
+```
+
+The four dark blocks on the diagonal show regional trade; the rows for DEU, USA and CHN show the large exporters reaching across regions.
+
+### How much stays within the region? A bar chart
+
+```{r}
+region_flows |>
+  group_by(from_region) |>
+  summarise(within = sum(value[from_region == to_region]) / sum(value)) |>
+  mutate(from_region = fct_reorder(from_region, within)) |>
+  ggplot(aes(within, from_region)) +
+  geom_col(fill = "grey60", width = 0.6) +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(x = "Share of exports going to the same region", y = NULL)
+```
+
+### What changed? A slope chart
+
+A second, invented time point in which China and Vietnam grow. Two network drawings side by side would be almost impossible to compare, because the layouts differ. A slope chart connects the same country across time.
+
+```{r}
+countries_t2 <- countries |>
+  mutate(mass = case_when(id == "CHN" ~ 6, id == "VNM" ~ 4, TRUE ~ mass))
+exports_t2 <- make_exports(countries_t2, seed = 2027)
+
+partners <- function(e, t) {
+  bind_rows(select(e, id = from), select(e, id = to)) |>
+    count(id, name = "partners") |>
+    mutate(time = t)
+}
+
+change <- bind_rows(partners(exports, "t1"), partners(exports_t2, "t2")) |>
+  complete(id = countries$id, time, fill = list(partners = 0)) |>
+  left_join(select(countries, id, region), by = "id")
+
+ggplot(change, aes(time, partners, group = id, colour = region)) +
+  geom_line(alpha = 0.6) +
+  geom_point(size = 1.5) +
+  geom_text(data = filter(change, time == "t2"), aes(label = id),
+            hjust = -0.3, size = 2.5, show.legend = FALSE) +
+  scale_colour_manual(values = region_cols) +
+  labs(x = NULL, y = "Number of trade ties (exports + imports)", colour = NULL)
+```
+
+### Which figure for which question?
+
+| Question | Network drawing | Better alternative |
+|---|---|---|
+| who is most central? | node size, hard to compare | dot plot |
+| exporter or importer? | arrows, hard to count | dumbbell plot |
+| do groups differ? | colour, hard to compare | beeswarm, box plot |
+| who trades with whom, in a dense network? | hairball | ordered adjacency matrix |
+| how much stays within groups? | colour and position | bar chart, mixing matrix |
+| what changed over time? | two layouts, not comparable | slope chart, small multiples on one axis |
+| is there a core, brokers, clusters? | **network drawing** | |
+| what is where? | **map layout** | |
+
+The network drawing earns its place when the question is about structure itself: paths, brokers, clusters, a core and a periphery. For questions about the attributes of nodes, even attributes computed from the network such as centrality, a classical figure is usually the better choice. A good paper often uses one network drawing to show the structure, and classical figures for everything that follows.
+
+## 7. Checklist for publication figures
+
+- State the question the figure answers. If it is about node attributes, try a classical figure first.
+- Fix the seed for every force-directed layout.
+- Justify the layout: spring for connections, radial for centrality, map for geography, matrix for dense networks.
+- Encode one variable per visual property, and say so in the legend or caption.
+- Label only the nodes the reader needs.
+- Report any threshold used to remove ties.
+- No 3D in static figures.
+- Use the same axes across panels so they can be compared.
+- Match the figure font to your document.
+
+## Your turn
+
+::: {.callout-tip title="Exercise"}
+1. Draw the course network with three layouts: Fruchterman–Reingold, Kamada–Kawai and circle ordered by a group attribute. Which question does each one answer best?
+2. Draw it twice with different seeds. Write down one thing that stays the same and one that changes.
+3. Produce the backbone of the network with two different thresholds. Does the story change?
+4. Choose one research question about your network. Draw the network figure and the best classical alternative from Section 6. Which would you put in a paper, and why?
+5. If your data contain coordinates or countries, draw the map layout. What does geography add that the spring layout hides?
+:::
+
+```{r}
+# your code here
+```
